@@ -2,9 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import requests
+
 
 # ============================================================
-# PAGE
+# PAGE SETUP
 # ============================================================
 
 st.set_page_config(
@@ -22,9 +24,8 @@ st.caption(
 
 st.info(
     "This is an experimental decision-support model. "
-    "Resistance, inventory, weighted-average price and RPG rules are based "
-    "on the course mechanics. The exact Flex-generation formula is not fully "
-    "published, so Flex estimates can be adjusted and calibrated using real results."
+    "The exact Flex-generation formula is not fully published, "
+    "so Flex estimates can be adjusted and later calibrated using real RPG results."
 )
 
 
@@ -43,7 +44,7 @@ if "calibrated_weights" not in st.session_state:
 
 
 # ============================================================
-# CONSTANTS
+# QUALITY / DELIVERY LEVELS
 # ============================================================
 
 QUALITY = {
@@ -59,81 +60,258 @@ DELIVERY = {
 }
 
 
+def safe_index(options, value, default=0):
+    try:
+        return options.index(value)
+    except Exception:
+        return default
+
+
 # ============================================================
-# SIDEBAR
+# SUPABASE CONNECTION
 # ============================================================
 
-st.sidebar.header("🎯 Round Setup")
+SUPABASE_AVAILABLE = False
+SUPABASE_ERROR = None
+
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+    HEADERS = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    SUPABASE_AVAILABLE = True
+
+except Exception as e:
+    SUPABASE_ERROR = str(e)
+
+
+def load_round_settings():
+
+    if not SUPABASE_AVAILABLE:
+        return None
+
+    url = (
+        f"{SUPABASE_URL}/rest/v1/"
+        "round_settings?id=eq.1&select=*"
+    )
+
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        timeout=10
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    if not data:
+        return None
+
+    return data[0]
+
+
+def save_round_settings(settings):
+
+    if not SUPABASE_AVAILABLE:
+        raise RuntimeError(
+            "Supabase secrets are not configured."
+        )
+
+    url = (
+        f"{SUPABASE_URL}/rest/v1/"
+        "round_settings?id=eq.1"
+    )
+
+    response = requests.patch(
+        url,
+        headers={
+            **HEADERS,
+            "Prefer": "return=minimal"
+        },
+        json=settings,
+        timeout=10
+    )
+
+    response.raise_for_status()
+
+
+# ============================================================
+# LOAD SAVED SETTINGS
+# ============================================================
+
+saved = None
+
+if SUPABASE_AVAILABLE:
+
+    try:
+        saved = load_round_settings()
+
+    except Exception as e:
+        st.warning(
+            f"Could not load shared settings from Supabase: {e}"
+        )
+
+else:
+
+    st.warning(
+        "Supabase persistence is not active in this environment. "
+        "The app will still work, but shared round settings will not be saved."
+    )
+
+
+# ============================================================
+# DEFAULT VALUES
+# ============================================================
+
+default_round = int(
+    saved.get("rpg_round", 0)
+) if saved else 0
+
+default_product = (
+    saved.get("product_name", "Pet Feeder")
+    if saved else "Pet Feeder"
+)
+
+default_base_price = float(
+    saved.get("base_price", 320.0)
+) if saved else 320.0
+
+default_base_units = int(
+    saved.get("base_units", 6000)
+) if saved else 6000
+
+default_role = (
+    saved.get("role", "Seller")
+    if saved else "Seller"
+)
+
+default_resistance = float(
+    saved.get("resistance", 291.2)
+) if saved else 291.2
+
+default_flex = float(
+    saved.get("current_flex", 2.0)
+) if saved else 2.0
+
+default_importance = int(
+    saved.get("importance", 5)
+) if saved else 5
+
+default_target_units = int(
+    saved.get("target_units", default_base_units)
+) if saved else default_base_units
+
+default_max_purchase = int(
+    saved.get("max_purchase", default_target_units)
+) if saved else default_target_units
+
+default_quality = (
+    saved.get("start_quality", "High")
+    if saved else "High"
+)
+
+default_delivery = (
+    saved.get("start_delivery", "Fast")
+    if saved else "Fast"
+)
+
+
+# ============================================================
+# SIDEBAR — SHARED ROUND SETUP
+# ============================================================
+
+st.sidebar.header("🎯 Shared Round Setup")
 
 rpg_round = st.sidebar.number_input(
     "RPG Round",
     min_value=0,
     max_value=20,
-    value=0,
+    value=default_round,
     step=1,
-    key="rpg_round"
+    key="setup_rpg_round"
 )
 
 product_name = st.sidebar.text_input(
     "Product Name",
-    value="Pet Feeder",
-    key="product_name"
+    value=default_product,
+    key="setup_product_name"
 )
 
 base_price = st.sidebar.number_input(
     "Base Price",
     min_value=0.01,
-    value=320.0,
+    value=default_base_price,
     step=1.0,
-    key="base_price"
+    key="setup_base_price"
 )
 
 base_units = st.sidebar.number_input(
     "Base Units",
     min_value=1,
-    value=6000,
+    value=default_base_units,
     step=100,
-    key="base_units"
+    key="setup_base_units"
 )
+
+
+# ============================================================
+# SIDEBAR — RPG POSITION
+# ============================================================
 
 st.sidebar.header("🎮 RPG Position")
 
+role_options = ["Seller", "Buyer"]
+
 role = st.sidebar.selectbox(
     "Role",
-    ["Seller", "Buyer"],
-    key="role"
+    role_options,
+    index=safe_index(
+        role_options,
+        default_role,
+        0
+    ),
+    key="setup_role"
 )
 
 resistance = st.sidebar.number_input(
     "Resistance Price",
     min_value=0.01,
-    value=291.2 if role == "Seller" else 350.0,
+    value=default_resistance,
     step=0.1,
-    key="resistance"
+    key="setup_resistance"
 )
 
 current_flex = st.sidebar.number_input(
     "Current Flex",
     min_value=0.0,
-    value=2.0,
+    value=default_flex,
     step=1.0,
-    key="current_flex"
+    key="setup_current_flex"
 )
 
 importance = st.sidebar.slider(
     "Importance",
-    1,
-    6,
-    5,
-    key="importance"
+    min_value=1,
+    max_value=6,
+    value=min(
+        max(default_importance, 1),
+        6
+    ),
+    key="setup_importance"
 )
 
 target_units = st.sidebar.number_input(
     "Target Units",
     min_value=1,
-    value=int(base_units),
+    value=default_target_units,
     step=100,
-    key="target_units"
+    key="setup_target_units"
 )
 
 units_already_completed = st.sidebar.number_input(
@@ -141,47 +319,115 @@ units_already_completed = st.sidebar.number_input(
     min_value=0,
     value=0,
     step=100,
-    key="units_completed"
+    key="units_already_completed"
 )
 
 if role == "Buyer":
+
+    safe_max_default = max(
+        default_max_purchase,
+        int(target_units)
+    )
+
     max_purchase = st.sidebar.number_input(
         "Max Purchase",
         min_value=int(target_units),
-        value=max(int(target_units), int(base_units)),
+        value=safe_max_default,
         step=100,
-        key="max_purchase"
+        key="setup_max_purchase"
     )
+
 else:
     max_purchase = None
+
 
 # ============================================================
 # STARTING QUALITY / DELIVERY
 # ============================================================
 
-st.sidebar.header("⚙️ Starting Capability")
+st.sidebar.header("⚙️ Starting Quality / Delivery")
 
-if role == "Seller":
-    q_default = 2
-    d_default = 2
-else:
-    q_default = 0
-    d_default = 0
+quality_names = list(QUALITY.keys())
+delivery_names = list(DELIVERY.keys())
 
 start_quality_name = st.sidebar.selectbox(
     "Starting Quality",
-    list(QUALITY.keys()),
-    index=q_default
+    quality_names,
+    index=safe_index(
+        quality_names,
+        default_quality,
+        2 if role == "Seller" else 0
+    ),
+    key="setup_start_quality"
 )
 
 start_delivery_name = st.sidebar.selectbox(
     "Starting Delivery",
-    list(DELIVERY.keys()),
-    index=d_default
+    delivery_names,
+    index=safe_index(
+        delivery_names,
+        default_delivery,
+        2 if role == "Seller" else 0
+    ),
+    key="setup_start_delivery"
 )
 
 start_quality = QUALITY[start_quality_name]
 start_delivery = DELIVERY[start_delivery_name]
+
+
+# ============================================================
+# SAVE ROUND SETTINGS
+# ============================================================
+
+if st.sidebar.button(
+    "💾 Save Shared Round Settings",
+    use_container_width=True,
+    key="save_shared_settings"
+):
+
+    settings = {
+        "rpg_round": int(rpg_round),
+        "product_name": product_name,
+        "base_price": float(base_price),
+        "base_units": int(base_units),
+        "role": role,
+        "resistance": float(resistance),
+        "current_flex": float(current_flex),
+        "importance": int(importance),
+        "target_units": int(target_units),
+        "max_purchase": (
+            int(max_purchase)
+            if max_purchase is not None
+            else 0
+        ),
+        "start_quality": start_quality_name,
+        "start_delivery": start_delivery_name
+    }
+
+    try:
+
+        save_round_settings(settings)
+
+        st.sidebar.success(
+            "Saved! Everyone will use these settings."
+        )
+
+        st.rerun()
+
+    except Exception as e:
+
+        st.sidebar.error(
+            f"Could not save settings: {e}"
+        )
+
+
+if st.sidebar.button(
+    "🔄 Reload Shared Settings",
+    use_container_width=True,
+    key="reload_shared_settings"
+):
+    st.rerun()
 
 
 # ============================================================
@@ -193,27 +439,39 @@ st.sidebar.header("🟣 Experimental Flex Model")
 use_calibration = False
 
 if st.session_state.calibrated_weights is not None:
+
     use_calibration = st.sidebar.checkbox(
         "Use calibrated Flex weights",
-        value=True
+        value=True,
+        key="use_calibrated_weights"
     )
 
 if use_calibration:
-    quality_weight = st.session_state.calibrated_weights["quality"]
-    delivery_weight = st.session_state.calibrated_weights["delivery"]
+
+    quality_weight = (
+        st.session_state
+        .calibrated_weights["quality"]
+    )
+
+    delivery_weight = (
+        st.session_state
+        .calibrated_weights["delivery"]
+    )
 
     st.sidebar.success(
-        f"Calibrated: Quality={quality_weight:.2f}, "
+        f"Quality={quality_weight:.2f}, "
         f"Delivery={delivery_weight:.2f}"
     )
 
 else:
+
     quality_weight = st.sidebar.slider(
         "Flex per Quality-level gap",
         0.0,
         10.0,
         2.0,
-        0.5
+        0.5,
+        key="quality_weight"
     )
 
     delivery_weight = st.sidebar.slider(
@@ -221,12 +479,45 @@ else:
         0.0,
         10.0,
         2.0,
-        0.5
+        0.5,
+        key="delivery_weight"
     )
 
 volume_weighting = st.sidebar.checkbox(
     "Scale Flex by deal volume",
-    value=True
+    value=True,
+    key="volume_weighting"
+)
+
+
+# ============================================================
+# CURRENT ROUND BANNER
+# ============================================================
+
+st.subheader(
+    f"RPG {rpg_round} — {product_name}"
+)
+
+c1, c2, c3, c4 = st.columns(4)
+
+c1.metric(
+    "Base Price",
+    f"{base_price:.2f}"
+)
+
+c2.metric(
+    "Base Units",
+    f"{base_units:,}"
+)
+
+c3.metric(
+    "Role",
+    role
+)
+
+c4.metric(
+    "Resistance",
+    f"{resistance:.2f}"
 )
 
 
@@ -234,12 +525,25 @@ volume_weighting = st.sidebar.checkbox(
 # CORE FUNCTIONS
 # ============================================================
 
-def price_gap_percent(role, price, resistance):
+def price_gap_percent(
+    role,
+    price,
+    resistance
+):
 
     if role == "Seller":
-        return ((price - resistance) / resistance) * 100
 
-    return ((resistance - price) / resistance) * 100
+        return (
+            (price - resistance)
+            / resistance
+            * 100
+        )
+
+    return (
+        (resistance - price)
+        / resistance
+        * 100
+    )
 
 
 def get_gaps(
@@ -252,15 +556,32 @@ def get_gaps(
 
     if role == "Seller":
 
-        q_gap = start_quality - final_quality
-        d_gap = start_delivery - final_delivery
+        q_gap = (
+            start_quality
+            - final_quality
+        )
+
+        d_gap = (
+            start_delivery
+            - final_delivery
+        )
 
     else:
 
-        q_gap = final_quality - start_quality
-        d_gap = final_delivery - start_delivery
+        q_gap = (
+            final_quality
+            - start_quality
+        )
 
-    return max(0, q_gap), max(0, d_gap)
+        d_gap = (
+            final_delivery
+            - start_delivery
+        )
+
+    return (
+        max(0, q_gap),
+        max(0, d_gap)
+    )
 
 
 def flex_gain(
@@ -290,9 +611,17 @@ def flex_gain(
     )
 
     if volume_weighting:
-        gain *= units / target_units
 
-    return gain, q_gap, d_gap
+        gain *= (
+            units
+            / target_units
+        )
+
+    return (
+        gain,
+        q_gap,
+        d_gap
+    )
 
 
 def inventory_factor(
@@ -303,10 +632,17 @@ def inventory_factor(
 ):
 
     if role == "Buyer":
-        if total_units > max_purchase:
+
+        if (
+            max_purchase is not None
+            and total_units > max_purchase
+        ):
             return 0.0
 
-    return min(total_units / target_units, 1.0)
+    return min(
+        total_units / target_units,
+        1.0
+    )
 
 
 def experimental_score(
@@ -317,7 +653,10 @@ def experimental_score(
 ):
 
     return (
-        (max(0, gap_pct) + final_flex)
+        (
+            max(0, gap_pct)
+            + final_flex
+        )
         * importance
         * inventory
     )
@@ -353,9 +692,15 @@ def evaluate_offer(
         volume_weighting
     )
 
-    final_flex = current_flex + fg
+    final_flex = (
+        current_flex
+        + fg
+    )
 
-    total_units = units_already_completed + units
+    total_units = (
+        units_already_completed
+        + units
+    )
 
     inv = inventory_factor(
         role,
@@ -371,29 +716,50 @@ def evaluate_offer(
         inv
     )
 
-    price_valid = (
-        price >= resistance
-        if role == "Seller"
-        else price <= resistance
-    )
+    if role == "Seller":
 
-    max_valid = True
+        valid_price = (
+            price >= resistance
+        )
+
+    else:
+
+        valid_price = (
+            price <= resistance
+        )
+
+    within_max = True
 
     if role == "Buyer":
-        max_valid = total_units <= max_purchase
 
-    # Strategy classification
+        within_max = (
+            total_units
+            <= max_purchase
+        )
 
-    price_component = max(0, pg)
+    price_component = max(
+        0,
+        pg
+    )
+
     flex_component = fg
 
-    if price_component > flex_component * 1.5:
+    if (
+        price_component
+        > flex_component * 1.5
+    ):
+
         strategy = "Price-first"
 
-    elif flex_component > price_component * 1.5:
+    elif (
+        flex_component
+        > price_component * 1.5
+    ):
+
         strategy = "Flex-first"
 
     else:
+
         strategy = "Balanced"
 
     return {
@@ -410,8 +776,8 @@ def evaluate_offer(
         "Inventory %": inv * 100,
         "Experimental Score": score,
         "Strategy": strategy,
-        "Valid Price": price_valid,
-        "Within Max": max_valid
+        "Valid Price": valid_price,
+        "Within Max": within_max
     }
 
 
@@ -423,19 +789,11 @@ def counterpart_proxy(
     min_price,
     max_price
 ):
-    """
-    Experimental proxy only.
 
-    Seller role:
-    Counterparty = buyer.
-    Buyer likes lower price + better service.
-
-    Buyer role:
-    Counterparty = seller.
-    Seller likes higher price + lower service burden.
-    """
-
-    rng = max(max_price - min_price, 0.01)
+    rng = max(
+        max_price - min_price,
+        0.01
+    )
 
     q = QUALITY[quality]
     d = DELIVERY[delivery]
@@ -449,7 +807,10 @@ def counterpart_proxy(
         )
 
         service_benefit = (
-            ((q - 1) + (d - 1))
+            (
+                (q - 1)
+                + (d - 1)
+            )
             / 4
             * 100
         )
@@ -463,7 +824,10 @@ def counterpart_proxy(
         )
 
         service_benefit = (
-            ((3 - q) + (3 - d))
+            (
+                (3 - q)
+                + (3 - d)
+            )
             / 4
             * 100
         )
@@ -474,11 +838,17 @@ def counterpart_proxy(
     )
 
 
-def pareto_mask(x, y):
+def pareto_mask(
+    x,
+    y
+):
 
     n = len(x)
 
-    keep = np.ones(n, dtype=bool)
+    keep = np.ones(
+        n,
+        dtype=bool
+    )
 
     for i in range(n):
 
@@ -497,6 +867,7 @@ def pareto_mask(x, y):
             )
 
             if dominates:
+
                 keep[i] = False
                 break
 
@@ -519,32 +890,59 @@ tabs = st.tabs([
 
 
 # ============================================================
-# TAB 1 — OFFER A / B / C
+# TAB 1 — OFFER COMPARATOR
 # ============================================================
 
 with tabs[0]:
 
-    st.header("Offer A / B / C Comparison")
-
-    st.write(
-        "Enter several realistic offers. The model compares "
-        "Price Gap, Flex potential, volume completion, and estimated score."
+    st.header(
+        "Offer A / B / C Comparison"
     )
 
     if role == "Seller":
 
         defaults = [
-            (340.0, "High", "Fast"),
-            (330.0, "Medium", "Medium"),
-            (320.0, "Low", "Slow")
+            (
+                base_price + 20,
+                "High",
+                "Fast"
+            ),
+            (
+                base_price + 10,
+                "Medium",
+                "Medium"
+            ),
+            (
+                base_price,
+                "Low",
+                "Slow"
+            )
         ]
 
     else:
 
         defaults = [
-            (290.0, "Low", "Slow"),
-            (300.0, "Medium", "Medium"),
-            (310.0, "High", "Fast")
+            (
+                max(
+                    1,
+                    base_price - 20
+                ),
+                "Low",
+                "Slow"
+            ),
+            (
+                max(
+                    1,
+                    base_price - 10
+                ),
+                "Medium",
+                "Medium"
+            ),
+            (
+                base_price,
+                "High",
+                "Fast"
+            )
         ]
 
     offers = []
@@ -553,40 +951,55 @@ with tabs[0]:
 
     for i, col in enumerate(cols):
 
-        letter = chr(65 + i)
+        letter = chr(
+            65 + i
+        )
 
         with col:
 
-            st.subheader(f"Offer {letter}")
+            st.subheader(
+                f"Offer {letter}"
+            )
 
             p = st.number_input(
                 f"Price {letter}",
-                min_value=1.0,
-                value=defaults[i][0],
+                min_value=0.01,
+                value=float(
+                    defaults[i][0]
+                ),
                 step=1.0,
-                key=f"price_{letter}"
+                key=f"offer_price_{letter}"
             )
 
             u = st.number_input(
                 f"Units {letter}",
                 min_value=1,
-                value=2000,
+                value=min(
+                    2000,
+                    int(target_units)
+                ),
                 step=100,
-                key=f"units_{letter}"
+                key=f"offer_units_{letter}"
             )
 
             q = st.selectbox(
                 f"Quality {letter}",
-                list(QUALITY.keys()),
-                index=list(QUALITY.keys()).index(defaults[i][1]),
-                key=f"quality_{letter}"
+                quality_names,
+                index=safe_index(
+                    quality_names,
+                    defaults[i][1]
+                ),
+                key=f"offer_quality_{letter}"
             )
 
             d = st.selectbox(
                 f"Delivery {letter}",
-                list(DELIVERY.keys()),
-                index=list(DELIVERY.keys()).index(defaults[i][2]),
-                key=f"delivery_{letter}"
+                delivery_names,
+                index=safe_index(
+                    delivery_names,
+                    defaults[i][2]
+                ),
+                key=f"offer_delivery_{letter}"
             )
 
             offers.append(
@@ -599,7 +1012,9 @@ with tabs[0]:
                 )
             )
 
-    comparison = pd.DataFrame(offers)
+    comparison = pd.DataFrame(
+        offers
+    )
 
     display_cols = [
         "Offer",
@@ -616,7 +1031,9 @@ with tabs[0]:
     ]
 
     st.dataframe(
-        comparison[display_cols].style.format({
+        comparison[
+            display_cols
+        ].style.format({
             "Price": "{:.2f}",
             "Price Gap %": "{:.2f}",
             "Flex Gain": "{:.2f}",
@@ -628,28 +1045,37 @@ with tabs[0]:
     )
 
     best_offer = comparison.loc[
-        comparison["Experimental Score"].idxmax()
+        comparison[
+            "Experimental Score"
+        ].idxmax()
     ]
 
     st.success(
         f"Highest experimental value: "
         f"{best_offer['Offer']} — "
-        f"{best_offer['Strategy']} strategy — "
-        f"Score {best_offer['Experimental Score']:.2f}"
+        f"{best_offer['Strategy']} — "
+        f"Score "
+        f"{best_offer['Experimental Score']:.2f}"
     )
 
     for row in offers:
 
-        if not row["Valid Price"]:
+        if not row[
+            "Valid Price"
+        ]:
 
             st.error(
-                f"{row['Offer']}: Price violates Resistance."
+                f"{row['Offer']}: "
+                "Price violates Resistance."
             )
 
-        if not row["Within Max"]:
+        if not row[
+            "Within Max"
+        ]:
 
             st.error(
-                f"{row['Offer']}: Buyer would exceed Max Purchase."
+                f"{row['Offer']}: "
+                "Buyer exceeds Max Purchase."
             )
 
 
@@ -659,14 +1085,13 @@ with tabs[0]:
 
 with tabs[1]:
 
-    st.header("Price ↔ Flex Break-even")
-
-    st.write(
-        "This tells you how much price advantage is equivalent "
-        "to one Flex point under the experimental score model."
+    st.header(
+        "Price ↔ Flex Break-even"
     )
 
-    one_flex_value = resistance / 100
+    one_flex_value = (
+        resistance / 100
+    )
 
     st.metric(
         "Approximate price value of 1 Flex",
@@ -674,127 +1099,104 @@ with tabs[1]:
     )
 
     st.caption(
-        "Because 1 Flex contributes approximately the same amount "
-        "as 1 percentage point of Resistance in this experimental model."
+        "Experimental interpretation: "
+        "1 Flex contributes approximately like "
+        "1 percentage point of Resistance."
     )
 
-    offer_names = comparison["Offer"].tolist()
+    offer_names = (
+        comparison["Offer"]
+        .tolist()
+    )
 
     c1, c2 = st.columns(2)
 
     with c1:
-        reference_name = st.selectbox(
-            "Reference Offer",
-            offer_names,
-            index=0
+
+        reference_name = (
+            st.selectbox(
+                "Reference Offer",
+                offer_names,
+                index=0,
+                key="break_even_reference"
+            )
         )
 
     with c2:
-        challenger_name = st.selectbox(
-            "Challenger Offer",
-            offer_names,
-            index=1
+
+        challenger_name = (
+            st.selectbox(
+                "Challenger Offer",
+                offer_names,
+                index=1,
+                key="break_even_challenger"
+            )
         )
 
     reference = comparison[
-        comparison["Offer"] == reference_name
+        comparison["Offer"]
+        == reference_name
     ].iloc[0]
 
     challenger = comparison[
-        comparison["Offer"] == challenger_name
+        comparison["Offer"]
+        == challenger_name
     ].iloc[0]
 
-    ref_score = reference["Experimental Score"]
-
-    challenger_inventory = (
-        challenger["Inventory %"] / 100
+    price_difference = abs(
+        challenger["Price"]
+        - reference["Price"]
     )
 
-    if challenger_inventory > 0:
+    flex_needed = (
+        price_difference
+        / one_flex_value
+        if one_flex_value > 0
+        else 0
+    )
 
-        required_total_component = (
-            ref_score
-            / (
-                importance
-                * challenger_inventory
-            )
+    actual_extra_flex = (
+        challenger["Flex Gain"]
+        - reference["Flex Gain"]
+    )
+
+    b1, b2, b3 = (
+        st.columns(3)
+    )
+
+    b1.metric(
+        "Price Difference",
+        f"{price_difference:.2f}"
+    )
+
+    b2.metric(
+        "Flex Needed to Offset",
+        f"{flex_needed:.2f}"
+    )
+
+    b3.metric(
+        "Extra Flex",
+        f"{actual_extra_flex:.2f}"
+    )
+
+    if (
+        actual_extra_flex
+        > flex_needed
+    ):
+
+        st.success(
+            "Under the experimental model, "
+            "the extra Flex is worth more "
+            "than the price concession."
         )
 
-        required_gap = (
-            required_total_component
-            - challenger["Final Flex"]
+    else:
+
+        st.warning(
+            "Under the experimental model, "
+            "the price advantage is worth more "
+            "than the extra Flex."
         )
-
-        if role == "Seller":
-
-            break_even_price = (
-                resistance
-                * (
-                    1
-                    + required_gap / 100
-                )
-            )
-
-        else:
-
-            break_even_price = (
-                resistance
-                * (
-                    1
-                    - required_gap / 100
-                )
-            )
-
-        st.metric(
-            f"{challenger_name} Break-even Price",
-            f"{break_even_price:.2f}"
-        )
-
-        actual_extra_flex = (
-            challenger["Flex Gain"]
-            - reference["Flex Gain"]
-        )
-
-        price_difference = abs(
-            challenger["Price"]
-            - reference["Price"]
-        )
-
-        flex_needed_for_price_difference = (
-            price_difference
-            / one_flex_value
-        )
-
-        c1, c2, c3 = st.columns(3)
-
-        c1.metric(
-            "Price Difference",
-            f"{price_difference:.2f}"
-        )
-
-        c2.metric(
-            "Flex Needed to Offset It",
-            f"{flex_needed_for_price_difference:.2f}"
-        )
-
-        c3.metric(
-            "Actual Extra Flex",
-            f"{actual_extra_flex:.2f}"
-        )
-
-        if actual_extra_flex > flex_needed_for_price_difference:
-
-            st.success(
-                "The additional Flex is experimentally worth "
-                "more than the price concession."
-            )
-
-        else:
-
-            st.warning(
-                "The price advantage is experimentally worth "
-                "more than the additional Flex."
-            )
 
 
 # ============================================================
@@ -803,50 +1205,68 @@ with tabs[1]:
 
 with tabs[2]:
 
-    st.header("Completed Deal Tracker")
-
-    st.write(
-        "Record real deals here. The dashboard calculates "
-        "weighted-average price and volume automatically."
+    st.header(
+        "Completed Deal Tracker"
     )
 
-    with st.form("deal_form"):
+    with st.form(
+        "deal_form"
+    ):
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3 = (
+            st.columns(3)
+        )
 
         with c1:
-            counterparty = st.text_input(
-                "Counterparty Group"
+
+            counterparty = (
+                st.text_input(
+                    "Counterparty Group"
+                )
             )
 
-            deal_id = st.text_input(
-                "Deal ID"
+            deal_id = (
+                st.text_input(
+                    "Deal ID"
+                )
             )
 
         with c2:
-            deal_price = st.number_input(
-                "Deal Price",
-                min_value=1.0,
-                value=float(base_price),
-                step=1.0
+
+            deal_price = (
+                st.number_input(
+                    "Deal Price",
+                    min_value=0.01,
+                    value=float(
+                        base_price
+                    ),
+                    step=1.0
+                )
             )
 
-            deal_units = st.number_input(
-                "Deal Units",
-                min_value=1,
-                value=1000,
-                step=100
+            deal_units = (
+                st.number_input(
+                    "Deal Units",
+                    min_value=1,
+                    value=1000,
+                    step=100
+                )
             )
 
         with c3:
-            deal_quality = st.selectbox(
-                "Deal Quality",
-                list(QUALITY.keys())
+
+            deal_quality = (
+                st.selectbox(
+                    "Deal Quality",
+                    quality_names
+                )
             )
 
-            deal_delivery = st.selectbox(
-                "Deal Delivery",
-                list(DELIVERY.keys())
+            deal_delivery = (
+                st.selectbox(
+                    "Deal Delivery",
+                    delivery_names
+                )
             )
 
         status = st.selectbox(
@@ -858,37 +1278,52 @@ with tabs[2]:
             ]
         )
 
-        add_deal = st.form_submit_button(
-            "Add Deal"
+        add_deal = (
+            st.form_submit_button(
+                "Add Deal"
+            )
         )
 
         if add_deal:
 
             existing_ids = [
                 d["Deal ID"]
-                for d in st.session_state.deals
+                for d
+                in st.session_state.deals
             ]
 
-            if deal_id and deal_id in existing_ids:
+            if (
+                deal_id
+                and deal_id
+                in existing_ids
+            ):
 
                 st.error(
-                    "Duplicate Deal ID detected. "
-                    "Each Deal ID should be unique."
+                    "Duplicate Deal ID."
                 )
 
             else:
 
                 st.session_state.deals.append({
-                    "Counterparty": counterparty,
-                    "Deal ID": deal_id,
-                    "Price": deal_price,
-                    "Units": deal_units,
-                    "Quality": deal_quality,
-                    "Delivery": deal_delivery,
-                    "Status": status
+                    "Counterparty":
+                        counterparty,
+                    "Deal ID":
+                        deal_id,
+                    "Price":
+                        deal_price,
+                    "Units":
+                        deal_units,
+                    "Quality":
+                        deal_quality,
+                    "Delivery":
+                        deal_delivery,
+                    "Status":
+                        status
                 })
 
-                st.success("Deal added.")
+                st.success(
+                    "Deal added."
+                )
 
     if st.session_state.deals:
 
@@ -902,12 +1337,16 @@ with tabs[2]:
         )
 
         completed = deal_df[
-            deal_df["Status"] == "Completed"
+            deal_df["Status"]
+            == "Completed"
         ]
 
         if not completed.empty:
 
-            total_volume = completed["Units"].sum()
+            total_volume = (
+                completed["Units"]
+                .sum()
+            )
 
             weighted_avg = (
                 (
@@ -917,7 +1356,9 @@ with tabs[2]:
                 / total_volume
             )
 
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3 = (
+                st.columns(3)
+            )
 
             c1.metric(
                 "Completed Units",
@@ -930,7 +1371,8 @@ with tabs[2]:
             )
 
             completion = min(
-                total_volume / target_units,
+                total_volume
+                / target_units,
                 1
             )
 
@@ -941,23 +1383,30 @@ with tabs[2]:
 
             if role == "Buyer":
 
-                if total_volume > max_purchase:
+                if (
+                    total_volume
+                    > max_purchase
+                ):
 
                     st.error(
-                        "Buyer has exceeded Max Purchase."
+                        "Max Purchase exceeded."
                     )
 
             else:
 
-                if total_volume > target_units:
+                if (
+                    total_volume
+                    > target_units
+                ):
 
                     st.warning(
-                        "Seller has sold above target Units. "
+                        "Seller is above target Units. "
                         "Check possible overproduction Flex cost."
                     )
 
         if st.button(
-            "Clear All Deals"
+            "Clear All Deals",
+            key="clear_all_deals"
         ):
 
             st.session_state.deals = []
@@ -965,20 +1414,19 @@ with tabs[2]:
 
     else:
 
-        st.info("No deals recorded yet.")
+        st.info(
+            "No deals recorded yet."
+        )
 
 
 # ============================================================
-# TAB 4 — PACKAGE GENERATOR
+# TAB 4 — WIN-WIN PACKAGES
 # ============================================================
 
 with tabs[3]:
 
-    st.header("Win-Win Package Generator")
-
-    st.write(
-        "Instead of arguing over one issue, present several "
-        "packages where better service is exchanged for price."
+    st.header(
+        "Win-Win Package Generator"
     )
 
     spread = st.slider(
@@ -986,7 +1434,19 @@ with tabs[3]:
         1.0,
         30.0,
         10.0,
-        1.0
+        1.0,
+        key="package_spread"
+    )
+
+    package_units = st.number_input(
+        "Package Units",
+        min_value=1,
+        value=min(
+            2000,
+            int(target_units)
+        ),
+        step=100,
+        key="package_units"
     )
 
     if role == "Seller":
@@ -994,13 +1454,15 @@ with tabs[3]:
         package_data = [
             (
                 "Premium",
-                base_price + 2 * spread,
+                base_price
+                + 2 * spread,
                 "High",
                 "Fast"
             ),
             (
                 "Balanced",
-                base_price + spread,
+                base_price
+                + spread,
                 "Medium",
                 "Medium"
             ),
@@ -1017,13 +1479,21 @@ with tabs[3]:
         package_data = [
             (
                 "Economy",
-                base_price - 2 * spread,
+                max(
+                    0.01,
+                    base_price
+                    - 2 * spread
+                ),
                 "Low",
                 "Slow"
             ),
             (
                 "Balanced",
-                base_price - spread,
+                max(
+                    0.01,
+                    base_price
+                    - spread
+                ),
                 "Medium",
                 "Medium"
             ),
@@ -1035,13 +1505,6 @@ with tabs[3]:
             )
         ]
 
-    package_units = st.number_input(
-        "Package Units",
-        min_value=1,
-        value=2000,
-        step=100
-    )
-
     packages = []
 
     for (
@@ -1051,20 +1514,29 @@ with tabs[3]:
         d
     ) in package_data:
 
-        result = evaluate_offer(
-            name,
-            price,
-            package_units,
-            q,
-            d
+        packages.append(
+            evaluate_offer(
+                name,
+                price,
+                package_units,
+                q,
+                d
+            )
         )
 
-        packages.append(result)
+    package_df = pd.DataFrame(
+        packages
+    )
 
-    package_df = pd.DataFrame(packages)
+    price_min = (
+        package_df["Price"]
+        .min()
+    )
 
-    price_min = package_df["Price"].min()
-    price_max = package_df["Price"].max()
+    price_max = (
+        package_df["Price"]
+        .max()
+    )
 
     package_df[
         "Counterparty Benefit Proxy"
@@ -1094,6 +1566,7 @@ with tabs[3]:
                 "Counterparty Benefit Proxy"
             ]
         ].style.format({
+            "Price": "{:.2f}",
             "Price Gap %": "{:.2f}",
             "Flex Gain": "{:.2f}",
             "Experimental Score": "{:.2f}",
@@ -1102,54 +1575,57 @@ with tabs[3]:
         use_container_width=True
     )
 
-    st.caption(
-        "Counterparty Benefit Proxy is experimental. "
-        "It rewards price/service combinations likely to be "
-        "more attractive to the other side."
-    )
-
 
 # ============================================================
-# TAB 5 — PARETO FRONTIER
+# TAB 5 — FRONTIER
 # ============================================================
 
 with tabs[4]:
 
-    st.header("Win-Win Negotiation Frontier")
-
-    st.write(
-        "The frontier highlights packages where improving your "
-        "own result would require reducing value for the counterparty, "
-        "or vice versa."
+    st.header(
+        "Win-Win Negotiation Frontier"
     )
 
-    frontier_units = st.number_input(
-        "Units for Frontier Simulation",
-        min_value=1,
-        value=2000,
-        step=100
+    frontier_units = (
+        st.number_input(
+            "Units for Frontier Simulation",
+            min_value=1,
+            value=min(
+                2000,
+                int(target_units)
+            ),
+            step=100,
+            key="frontier_units"
+        )
     )
 
-    price_values = np.linspace(
-        base_price - 30,
-        base_price + 30,
-        13
+    price_values = (
+        np.linspace(
+            max(
+                0.01,
+                base_price - 30
+            ),
+            base_price + 30,
+            13
+        )
     )
 
     frontier_rows = []
 
     for p in price_values:
 
-        for q_name in QUALITY.keys():
+        for q_name in quality_names:
 
-            for d_name in DELIVERY.keys():
+            for d_name in delivery_names:
 
-                result = evaluate_offer(
-                    "Scenario",
-                    p,
-                    frontier_units,
-                    q_name,
-                    d_name
+                result = (
+                    evaluate_offer(
+                        "Scenario",
+                        p,
+                        frontier_units,
+                        q_name,
+                        d_name
+                    )
                 )
 
                 cp = counterpart_proxy(
@@ -1169,7 +1645,8 @@ with tabs[4]:
                         result[
                             "Experimental Score"
                         ],
-                    "Counterparty Benefit": cp
+                    "Counterparty Benefit":
+                        cp
                 })
 
     frontier_df = pd.DataFrame(
@@ -1185,7 +1662,9 @@ with tabs[4]:
         ].values
     )
 
-    pareto_df = frontier_df[mask]
+    pareto_df = (
+        frontier_df[mask]
+    )
 
     fig, ax = plt.subplots(
         figsize=(9, 6)
@@ -1210,7 +1689,7 @@ with tabs[4]:
             "Our Score"
         ],
         color="red",
-        label="Frontier"
+        label="Pareto Frontier"
     )
 
     ax.set_xlabel(
@@ -1248,54 +1727,62 @@ with tabs[4]:
 
 with tabs[5]:
 
-    st.header("Calibrate Flex Using Real RPG Data")
-
-    st.write(
-        "After real deals, enter the actual Flex gain shown "
-        "by the RPG. After several observations, the app can "
-        "estimate the Quality and Delivery Flex weights."
+    st.header(
+        "Calibrate Flex Using Real RPG Results"
     )
 
     with st.form(
         "calibration_form"
     ):
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3 = (
+            st.columns(3)
+        )
 
         with c1:
 
-            cal_units = st.number_input(
-                "Observed Deal Units",
-                min_value=1,
-                value=1000,
-                step=100
+            cal_units = (
+                st.number_input(
+                    "Observed Deal Units",
+                    min_value=1,
+                    value=1000,
+                    step=100
+                )
             )
 
         with c2:
 
-            cal_quality = st.selectbox(
-                "Observed Deal Quality",
-                list(QUALITY.keys()),
-                key="cal_q"
+            cal_quality = (
+                st.selectbox(
+                    "Observed Deal Quality",
+                    quality_names,
+                    key="cal_quality"
+                )
             )
 
         with c3:
 
-            cal_delivery = st.selectbox(
-                "Observed Deal Delivery",
-                list(DELIVERY.keys()),
-                key="cal_d"
+            cal_delivery = (
+                st.selectbox(
+                    "Observed Deal Delivery",
+                    delivery_names,
+                    key="cal_delivery"
+                )
             )
 
-        actual_flex_gain = st.number_input(
-            "Actual Flex Gain from RPG",
-            min_value=0.0,
-            value=1.0,
-            step=0.1
+        actual_flex_gain = (
+            st.number_input(
+                "Actual Flex Gain",
+                min_value=0.0,
+                value=1.0,
+                step=0.1
+            )
         )
 
-        add_observation = st.form_submit_button(
-            "Add Observation"
+        add_observation = (
+            st.form_submit_button(
+                "Add Observation"
+            )
         )
 
         if add_observation:
@@ -1305,11 +1792,14 @@ with tabs[5]:
                 start_quality,
                 start_delivery,
                 QUALITY[cal_quality],
-                DELIVERY[cal_delivery]
+                DELIVERY[
+                    cal_delivery
+                ]
             )
 
             volume_factor = (
-                cal_units / target_units
+                cal_units
+                / target_units
                 if volume_weighting
                 else 1
             )
@@ -1350,7 +1840,9 @@ with tabs[5]:
                 cal_df[
                     "Delivery Feature"
                 ].values,
-                np.ones(len(cal_df))
+                np.ones(
+                    len(cal_df)
+                )
             ])
 
             y = cal_df[
@@ -1377,7 +1869,9 @@ with tabs[5]:
 
             intercept = beta[2]
 
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3 = (
+                st.columns(3)
+            )
 
             c1.metric(
                 "Estimated Quality Weight",
@@ -1390,12 +1884,13 @@ with tabs[5]:
             )
 
             c3.metric(
-                "Estimated Intercept",
+                "Intercept",
                 f"{intercept:.2f}"
             )
 
             if st.button(
-                "Use These Calibrated Weights"
+                "Use These Calibrated Weights",
+                key="use_calibrated_btn"
             ):
 
                 st.session_state.calibrated_weights = {
@@ -1403,46 +1898,39 @@ with tabs[5]:
                     "delivery": d_est
                 }
 
-                st.success(
-                    "Calibrated weights activated. "
-                    "The page will use them after rerun."
-                )
-
                 st.rerun()
 
         else:
 
             st.info(
-                "Add at least 3 real observations "
-                "before calibration."
+                "Add at least 3 observations."
             )
 
         if st.button(
-            "Clear Calibration Data"
+            "Clear Calibration Data",
+            key="clear_calibration"
         ):
 
             st.session_state.calibration = []
             st.session_state.calibrated_weights = None
+
             st.rerun()
 
 
 # ============================================================
-# TAB 7 — MONTE CARLO
+# TAB 7 — RISK SIMULATION
 # ============================================================
 
 with tabs[6]:
 
-    st.header("Monte Carlo / Risk Analysis")
-
-    st.write(
-        "Flex gain is uncertain. This simulation asks: "
-        "If the actual Flex gain is somewhat higher or lower "
-        "than expected, which offer remains strong?"
+    st.header(
+        "Monte Carlo / Risk Analysis"
     )
 
     sim_offer_name = st.selectbox(
         "Offer to Simulate",
-        comparison["Offer"].tolist()
+        comparison["Offer"].tolist(),
+        key="sim_offer"
     )
 
     sim_offer = comparison[
@@ -1455,14 +1943,16 @@ with tabs[6]:
         0.0,
         10.0,
         2.0,
-        0.5
+        0.5,
+        key="flex_uncertainty"
     )
 
     target_score = st.number_input(
         "Target Score",
         min_value=0.0,
         value=80.0,
-        step=5.0
+        step=5.0,
+        key="target_score"
     )
 
     simulations = st.slider(
@@ -1470,22 +1960,29 @@ with tabs[6]:
         1000,
         20000,
         5000,
-        1000
+        1000,
+        key="simulations"
     )
 
-    rng = np.random.default_rng(
-        42
+    rng = (
+        np.random.default_rng(
+            42
+        )
     )
 
     simulated_gain = rng.normal(
-        sim_offer["Flex Gain"],
+        sim_offer[
+            "Flex Gain"
+        ],
         flex_uncertainty,
         simulations
     )
 
-    simulated_gain = np.maximum(
-        0,
-        simulated_gain
+    simulated_gain = (
+        np.maximum(
+            0,
+            simulated_gain
+        )
     )
 
     simulated_final_flex = (
@@ -1540,7 +2037,9 @@ with tabs[6]:
         >= target_score
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4 = (
+        st.columns(4)
+    )
 
     c1.metric(
         "Expected Score",
@@ -1608,7 +2107,7 @@ with tabs[6]:
 st.divider()
 
 st.caption(
-    "Decision rule: do not maximize Price or Flex independently. "
-    "Compare the value of the price concession with the additional "
-    "Flex and the effect on volume completion."
+    "Main decision rule: do not maximize Price or Flex independently. "
+    "Compare the price concession, Flex gain, service level, "
+    "and progress toward your target volume together."
 )
