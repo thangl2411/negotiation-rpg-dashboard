@@ -63,101 +63,97 @@ DELIVERY = {
 # SIDEBAR
 # ============================================================
 
-st.sidebar.header("🎮 RPG Position")
-
-role = st.sidebar.selectbox(
-    "Role",
-    ["Seller", "Buyer"]
-)
-
-base_price = st.sidebar.number_input(
-    "Base Price",
-    min_value=1.0,
-    value=320.0,
-    step=1.0
-)
-
-base_units = st.sidebar.number_input(
-    "Base Units",
-    min_value=1,
-    value=6000,
-    step=100
-)
-
-default_resistance = 291.2 if role == "Seller" else 350.0
-
-resistance = st.sidebar.number_input(
-    "Resistance Price",
-    min_value=1.0,
-    value=default_resistance,
-    step=0.1
-)
-
-current_flex = st.sidebar.number_input(
-    "Current Flex",
-    min_value=0.0,
-    value=2.0,
-    step=1.0
-)
-
-importance = st.sidebar.slider(
-    "Importance",
-    1,
-    6,
-    5
-)
-
-target_units = st.sidebar.number_input(
-    "Target Units",
-    min_value=1,
-    value=6000,
-    step=100
-)
-
-units_already_completed = st.sidebar.number_input(
-    "Units Already Completed",
-    min_value=0,
-    value=0,
-    step=100
-)
-
-if role == "Buyer":
-    max_purchase = st.sidebar.number_input(
-        "Max Purchase",
-        min_value=target_units,
-        value=max(target_units, 6500),
-        step=100
-    )
-else:
-    max_purchase = None
-    st.sidebar.header("🎯 Round Setup")
+st.sidebar.header("🎯 Round Setup")
 
 rpg_round = st.sidebar.number_input(
     "RPG Round",
     min_value=0,
     max_value=20,
     value=0,
-    step=1
+    step=1,
+    key="rpg_round"
 )
 
 product_name = st.sidebar.text_input(
-    "Product",
-    value="Pet Feeder"
+    "Product Name",
+    value="Pet Feeder",
+    key="product_name"
 )
 
 base_price = st.sidebar.number_input(
     "Base Price",
     min_value=0.01,
     value=320.0,
-    step=1.0
+    step=1.0,
+    key="base_price"
 )
 
 base_units = st.sidebar.number_input(
     "Base Units",
     min_value=1,
     value=6000,
-    step=100
+    step=100,
+    key="base_units"
 )
+
+st.sidebar.header("🎮 RPG Position")
+
+role = st.sidebar.selectbox(
+    "Role",
+    ["Seller", "Buyer"],
+    key="role"
+)
+
+resistance = st.sidebar.number_input(
+    "Resistance Price",
+    min_value=0.01,
+    value=291.2 if role == "Seller" else 350.0,
+    step=0.1,
+    key="resistance"
+)
+
+current_flex = st.sidebar.number_input(
+    "Current Flex",
+    min_value=0.0,
+    value=2.0,
+    step=1.0,
+    key="current_flex"
+)
+
+importance = st.sidebar.slider(
+    "Importance",
+    1,
+    6,
+    5,
+    key="importance"
+)
+
+target_units = st.sidebar.number_input(
+    "Target Units",
+    min_value=1,
+    value=int(base_units),
+    step=100,
+    key="target_units"
+)
+
+units_already_completed = st.sidebar.number_input(
+    "Units Already Completed",
+    min_value=0,
+    value=0,
+    step=100,
+    key="units_completed"
+)
+
+if role == "Buyer":
+    max_purchase = st.sidebar.number_input(
+        "Max Purchase",
+        min_value=int(target_units),
+        value=max(int(target_units), int(base_units)),
+        step=100,
+        key="max_purchase"
+    )
+else:
+    max_purchase = None
 
 # ============================================================
 # STARTING QUALITY / DELIVERY
